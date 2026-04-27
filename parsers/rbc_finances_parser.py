@@ -1,61 +1,58 @@
 import requests as rq
-from bs4 import BeautifulSoup as bs
 import datetime as dt
 import json
 import re
 import os
+from email.utils import parsedate_to_datetime
+import xml.etree.ElementTree as ET
 
-RBC_FINANCE_URL = 'https://rbc.ru/v10/ajax/get-news-by-filters/?category=finances&limit=20&offset='
-CLEANR = re.compile('<.*?>') 
+# RBC blocks direct API/HTML scraping; RSS feed provides full-text via custom namespace
+RBC_RSS_URL = 'https://rssexport.rbc.ru/rbcnews/news/30/full.rss'
+RBC_NS = 'https://www.rbc.ru'
 
 
 def parse_rbc_news(days=1):
-    offset = 0
-    ress = []
-    while (True):
-        response = rq.get(RBC_FINANCE_URL + str(offset))
-        offset += 20
-        if (response.status_code == 200):
-            news_urls = re.findall('https://www.rbc.ru/finances/\d+/\d+/\d+/\w+', response.text)
-            for url in news_urls:
-                try:
-                    res = {}
-                    res['url']= url
-                    news = rq.get(url).text
-                    soup = bs(news, 'html.parser')
-                    res['site'] = 'rbc_finances'
-                    res['title'] = soup.body.find(class_="article__header__title-in js-slide-title").text.replace("\xa0", " ").replace("\t", " ").strip()
-                    
-                    def cleanhtml(raw_html):
-                        return re.sub(CLEANR, '', raw_html)
+    headers = {'User-Agent': 'Mozilla/5.0 (compatible; RSS reader)'}
+    response = rq.get(RBC_RSS_URL, headers=headers, timeout=10)
+    if response.status_code != 200:
+        print(f'RBC RSS error: {response.status_code}')
+        return []
 
-                    raw = soup.body.find('div', class_="article__text article__text_free").find_all('p')
-                    res['text'] = ''
-                    for i in raw:
-                        if (str(i).find('span') == -1):
-                            res['text'] += cleanhtml(str(i))
-                    try:
-                        res['description'] = soup.body.find(class_="article__text__overview").text.replace("\xa0", " ").replace("\t", " ")
-                    except:
-                        if (len(res['text']) > 100):
-                            res['description'] = res['text'][:100] + '...'
-                        else:
-                            res['description'] = res['text']
-                    date_raw =re.findall('\d{4}-\d+-\d+T\d+:\d+:\d+' ,str(soup.body.find(class_="article__header__date")))[0]
-                    date, time = date_raw.split('T')
-                    date = date.split('-')
-                    time = time.split(':')
-                    res['timestamp'] = dt.datetime(int(date[0]), int(date[1]), int(date[2]), int(time[0]), int(time[1]), int(time[2])).timestamp()
-                    if (days * 86400 + res['timestamp'] < dt.datetime.now().timestamp()):
-                        return ress
-                    ress.append(res)
-                except Exception as e:
-                    print(e, url)
-        else:
-            return ress
-        
-            
-            
+    root = ET.fromstring(response.content)
+    ns = {'rbc': 'https://www.rbc.ru'}
+    ress = []
+    cutoff = dt.datetime.now().timestamp() - days * 86400
+
+    for item in root.iter('item'):
+        url = item.findtext('link', '').strip()
+        if '/finances/' not in url:
+            continue
+        try:
+            res = {}
+            res['url'] = url
+            res['site'] = 'rbc_finances'
+            res['title'] = (item.findtext('title') or '').replace('\xa0', ' ').replace('\t', ' ').strip()
+            res['description'] = (item.findtext('description') or '').replace('\xa0', ' ').replace('\t', ' ').strip()
+
+            full_text_el = item.find('{https://www.rbc.ru}full-text')
+            if full_text_el is not None and full_text_el.text:
+                clean = re.sub(r'<[^>]+>', '', full_text_el.text)
+                res['text'] = clean.replace('\xa0', ' ').replace('\t', ' ').strip()
+            else:
+                res['text'] = res['description']
+
+            pub_date = item.findtext('pubDate', '')
+            ts = parsedate_to_datetime(pub_date).timestamp()
+            res['timestamp'] = ts
+
+            if ts < cutoff:
+                continue
+            ress.append(res)
+        except Exception as e:
+            print(e, url)
+
+    return ress
+
 
 if __name__ == "__main__":
     print('Start parsing rbc finances.')
@@ -64,5 +61,4 @@ if __name__ == "__main__":
     file_name = os.path.join(file_dir, '../data/rbc_finances_news.json')
     with open(file_name, 'w+') as outfile:
         json.dump(res, outfile)
-    print('Parsing rbc finances finished. Data load to rbc_finances_news.json.')
-    
+    print(f'Parsing rbc finances finished. {len(res)} articles saved to rbc_finances_news.json.')

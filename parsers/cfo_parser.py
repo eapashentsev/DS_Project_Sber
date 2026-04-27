@@ -1,5 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
+import re
 import time
 import datetime
 import json
@@ -12,65 +13,68 @@ headers.update(
     }
 )
 
+CLEANR = re.compile('<.*?>')
 
-#"https://www.cfo-russia.ru/novosti/?article=73485"
+
+def cleanhtml(raw_html):
+    return re.sub(CLEANR, '', raw_html)
+
+
 def get_cfo_article(url):
     text = requests.get(url, headers=headers).text
     soup = BeautifulSoup(text, 'html.parser')
-    import re
-    CLEANR = re.compile('<.*?>') 
-
-    def cleanhtml(raw_html):
-        return re.sub(CLEANR, '', raw_html)
-
-
     html = str(soup.find("div", "news-detail").find("span", itemprop="description"))
     return cleanhtml(html).replace("\t", " ").replace("\xa0", " ")
 
-# "https://www.cfo-russia.ru/novosti/?PAGEN_1=4"
+
 def get_cfo_page(url):
     text = requests.get(url, headers=headers).text
     soup = BeautifulSoup(text, 'html.parser')
 
     res = []
-    for i in soup.body.find(id="content").find("ul", "item-list").find_all("li"):
-        title_a = i.find("div", "title").a
-        url = "https://www.cfo-russia.ru" + str(title_a.get("href"))
-        title = str(title_a.string).strip()
-        description = str(i.find("div", "description").string).strip()
-        date = str(i.find("div", "date-box").string).strip()
-        timestamp = time.mktime(datetime.datetime.strptime(date, "%d.%m.%Y").timetuple())
-        text = get_cfo_article(url)
-        res.append({
-            "url":url,
-            "title": title,
-            "description": description,
-            "text": text,
-            "timestamp": timestamp
-        })
+    content = soup.body.find(id="content")
+    if not content:
+        return res
+    item_list = content.find("ul", "item-list")
+    if not item_list:
+        return res
+
+    for i in item_list.find_all("li"):
+        try:
+            title_a = i.find("div", "title").a
+            article_url = "https://www.cfo-russia.ru" + str(title_a.get("href"))
+            title = str(title_a.string).strip()
+            description = str(i.find("div", "description").string).strip()
+            date = str(i.find("div", "date-box").string).strip()
+            timestamp = time.mktime(datetime.datetime.strptime(date, "%d.%m.%Y").timetuple())
+            article_text = get_cfo_article(article_url)
+            res.append({
+                "url": article_url,
+                "title": title,
+                "description": description,
+                "text": article_text,
+                "timestamp": timestamp,
+                "site": "cfo"
+            })
+        except Exception as e:
+            print(e, url)
     return res
 
-# get_cfo(0, 10)
-def get_cfo(offset, count):
-    res = []
-    while len(res) < count:
-        url = "https://www.cfo-russia.ru/novosti/?PAGEN_1=" + str(offset + 1)
-        offset += 1
-        res += get_cfo_page(url)
-        
-    return res[:count]
 
-
-# get_cfo_days(10)
-def get_cfo_days(days):
+def get_cfo_days(days, max_pages=50):
     res = []
     time_begin = time.time() - datetime.timedelta(days=days).total_seconds()
-    offset = 0 # datetime.date.today()
-    while len(res) == 0 or time_begin <= res[-1]["timestamp"]:
+    offset = 0
+    while offset < max_pages:
         url = "https://www.cfo-russia.ru/novosti/?PAGEN_1=" + str(offset + 1)
         offset += 1
-        res += get_cfo_page(url)
-    return list(filter(lambda i : time_begin <= i["timestamp"], res))
+        page = get_cfo_page(url)
+        if not page:
+            break
+        res += page
+        if res and res[-1]["timestamp"] < time_begin:
+            break
+    return list(filter(lambda i: time_begin <= i["timestamp"], res))
 
 
 if __name__ == "__main__":
@@ -80,5 +84,4 @@ if __name__ == "__main__":
     file_name = os.path.join(file_dir, '../data/cfo_news.json')
     with open(file_name, 'w+') as outfile:
         json.dump(res, outfile)
-    print('Parsing cfo-russia.ru finished. Data load to cfo_news.json.')
-    
+    print(f'Parsing cfo-russia.ru finished. {len(res)} articles saved to cfo_news.json.')

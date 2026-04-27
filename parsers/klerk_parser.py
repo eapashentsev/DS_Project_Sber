@@ -15,12 +15,14 @@ def parse_klerk_news(days=1):
         response = rq.get(KLERK_NEWS_URL + str(page_number))
         if (response.status_code == 200):
             page_number += 1
-            news_urls = re.findall('klerk\.ru/buh/news/[\d]*/\"', response.text)[:-5]
+            news_urls = re.findall(r'klerk\.ru/buh/news/[\d]*/"', response.text)[:-5]
+            if not news_urls:
+                return ress
             for news_url in news_urls:
                 try:
                     res = {}
                     url = 'https://www.' + news_url[:-1]
-                    res['url']= url
+                    res['url'] = url
                     news = rq.get(url).text
                     soup = bs(news, 'html.parser')
                     res['site'] = 'klerk'
@@ -33,7 +35,7 @@ def parse_klerk_news(days=1):
                             res['description'] = res['text'][:100] + '...'
                         else:
                             res['description'] = res['text']
-                    date_raw = re.findall('\d{4}-\d+-\d+ \d+:\d+:\d+', str(soup.body.find(class_="status__block")))[0]
+                    date_raw = re.findall(r'\d{4}-\d+-\d+ \d+:\d+:\d+', str(soup.body.find(class_="status__block")))[0]
                     date, time = date_raw.split()
                     date = date.split('-')
                     time = time.split(':')
@@ -43,14 +45,16 @@ def parse_klerk_news(days=1):
                     ress.append(res)
                 except Exception as e:
                     print(e, 'url:', url)
-            
-            
+        else:
+            return ress
+    return ress
+
 
 if __name__ == "__main__":
     print('Start parsing klerk.ru')
     res = parse_klerk_news(2)
     file_dir = os.path.dirname(os.path.realpath('__file__'))
-    file_name = os.path.join(file_dir, '../data/kelrk_news.json')
+    file_name = os.path.join(file_dir, '../data/klerk_news.json')
     with open(file_name, 'w+') as outfile:
         json.dump(res, outfile)
     print('Parsing klerk.ru finished. Data load to kelrk_news.json.')
